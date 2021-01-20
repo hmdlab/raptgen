@@ -1,0 +1,8 @@
+*.egg-info
+**/*.pyc
+
+out/**
+!out/*/.gitkeep
+**/*-checkpoint.py
+**/.log
+pip-wheel-metadata/**
