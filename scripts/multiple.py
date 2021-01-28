@@ -119,7 +119,7 @@ def main(n_motif, n_seq, seed, error_rate, epochs, threshold, cuda_id, use_cuda,
             model_str += ".mdl"
             print (f"training {model_str}")
             
-            optimizer = optim.Adam(model.parameters())
+            optimizer = optim.Adam(model.parameters(),lr=1e-2)
             model = model.to(device)
 
             train_kwargs.update({

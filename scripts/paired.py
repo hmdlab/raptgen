@@ -117,7 +117,7 @@ def main(n_seq, seed, epochs, threshold, cuda_id, use_cuda, save_dir,reg_epochs,
                 model_str += f"_{i}"
             model_str += ".mdl"
             print (f"training {model_str}")
-            optimizer = optim.Adam(model.parameters())
+            optimizer = optim.Adam(model.parameters(),lr=1e-2)
             model = model.to(device)
 
             train_kwargs.update({
