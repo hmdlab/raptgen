@@ -6,3 +6,4 @@ out/**
 **/*-checkpoint.py
 **/.log
 pip-wheel-metadata/**
+Pipfile.lock
