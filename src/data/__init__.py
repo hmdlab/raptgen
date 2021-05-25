@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
+from functools import lru_cache
 from collections import Counter, defaultdict
 import re
 import datetime
@@ -13,7 +14,6 @@ from itertools import product
 import pandas as pd
 import matplotlib
 from tqdm.auto import tqdm
-from collections import Counter
 from multiprocessing import Pool
 
 import logging
@@ -25,6 +25,7 @@ class State(IntEnum):
     I = 1
     D = 2
 
+
 class Transition(IntEnum):
     M2M = 0
     M2I = 1
@@ -33,6 +34,7 @@ class Transition(IntEnum):
     I2I = 4
     D2M = 5
     D2D = 6
+
 
 class nt_index(IntEnum):
     A = 0
@@ -44,6 +46,7 @@ class nt_index(IntEnum):
     EOS = 6
     U = 1
 
+
 def one_hot_index(seq):
     return [int(nt_index[char]) for char in seq]
 
@@ -54,9 +57,6 @@ def one_hot_encode(nucleotide, padding=0):
     # パディングの大きさを指定する
     arr = np.vstack((np.eye(4), np.ones(4)[None, :]*0.25))
     return arr[one_hot_index("N"*padding + nucleotide + "N"*padding)].T
-
-
-
 
 
 class SNV(IntEnum):
@@ -208,11 +208,12 @@ class SingleRound:
             if path .suffix == ".fastq":
                 logger.info("reading fastq format sequence")
                 raw_reads = read_fastq(path)
-            elif path.suffix in {".fasta",".fa"} :
+            elif path.suffix in {".fasta", ".fa"}:
                 logger.info("reading fasta format sequence")
                 raw_reads = read_fasta(path)
             else:
-                logger.critical("please specify a file with fasta or fastq format")
+                logger.critical(
+                    "please specify a file with fasta or fastq format")
                 quit()
 
         self.raw_reads = raw_reads
@@ -222,9 +223,10 @@ class SingleRound:
             logger.info("adapter info not provided. estimating value")
             self.calc_experimental_settings()
         else:
-            logger.info(f"sequence design : {forward_adapter}-[random]-{reverse_adapter}")
+            logger.info(
+                f"sequence design : {forward_adapter}-[random]-{reverse_adapter}")
             self.set_adapters(forward_adapter, reverse_adapter)
-        
+
         if name:
             self.name = name
         else:
@@ -275,6 +277,10 @@ class SingleRound:
                     f"estimated forward adapter len is {i-1} : {est_adapter}")
                 break
             max_count = sorted(d.items(), key=lambda x: -x[1])[0][1]
+            if max_count < sum(self.read_counter.values()) * 0.5:
+                logger.info(
+                    f"no match found.")
+                break
             est_adapter = top_seq
         fwd_len = i - 1
         fwd_adapter = est_adapter
@@ -294,6 +300,10 @@ class SingleRound:
                     f"estimated reverse adapter len is {i-1} : {est_adapter}")
                 break
             max_count = sorted(d.items(), key=lambda x: -x[1])[0][1]
+            if max_count < sum(self.read_counter.values()) * 0.5:
+                logger.info(
+                    f"no match found.")
+                break
             est_adapter = top_seq
         rev_len = i - 1
         rev_adapter = est_adapter
@@ -318,9 +328,12 @@ class SingleRound:
             return c.most_common()
 
     def filter_function(self, read):
-        has_forward = read[: self.forward_adapter_length] == self.forward_adapter
-        has_reverse = read[-self.reverse_adapter_length:] == self.reverse_adapter
-        match_random_region_len = abs(len(read) - self.target_length) <= self.tolerance
+        has_forward = read[: self.forward_adapter_length] == self.forward_adapter \
+            or self.forward_adapter_length == 0
+        has_reverse = read[-self.reverse_adapter_length:] == self.reverse_adapter \
+            or self.reverse_adapter_length == 0
+        match_random_region_len = abs(
+            len(read) - self.target_length) <= self.tolerance
         return has_forward and has_reverse and match_random_region_len
 
     def get_filter_passed_sequences(self, random_only=False):
@@ -330,17 +343,20 @@ class SingleRound:
         return self.filter_passed
 
     def cut_adapters(self, seq):
+        if self.reverse_adapter_length == 0:
+            return seq[self.forward_adapter_length:]
         return seq[self.forward_adapter_length:-self.reverse_adapter_length]
 
     def __str__(self):
         return f"experiment of {len(self.raw_reads)} raw reads"
 
-    def get_dataloader(self, min_count=1, test_size=0.1, batch_size=512, shuffle=True, use_cuda = True):
+    def get_dataloader(self, min_count=1, test_size=0.1, batch_size=512, shuffle=True, use_cuda=True):
         from sklearn.model_selection import train_test_split
         from torch.utils.data import DataLoader
-        
+
         self.min_count = min_count
-        kwargs = {'num_workers': 1, 'pin_memory': True} if (use_cuda and torch.cuda.is_available()) else {}
+        kwargs = {'num_workers': 1, 'pin_memory': True} if (
+            use_cuda and torch.cuda.is_available()) else {}
         # load RAPT1-4R and filter reads to count>1, then make it to one hot encoded tensor
         c = self.get_filter_passed_sequences(random_only=True)
         sequences = list(
@@ -372,6 +388,7 @@ class Dataset(torch.utils.data.Dataset):
         out_data = self.data[index]
         return out_data
 
+
 def local_alignment(s1, s2, print_result=False, global_alignment=False):
     GAP_COST = -1
     MATCH_COST = +1
@@ -396,12 +413,12 @@ def local_alignment(s1, s2, print_result=False, global_alignment=False):
     # DP
     for i1, c1 in enumerate(s1):
         for i2, c2 in enumerate(s2):
-            l = [ dp[i1][i2][OBJ] + s(c1, c2),
-                dp[i1][i2 + 1][OBJ] + GAP_COST,
-                dp[i1 + 1][i2][OBJ] + GAP_COST]
-            if not global_alignment :
+            l = [dp[i1][i2][OBJ] + s(c1, c2),
+                 dp[i1][i2 + 1][OBJ] + GAP_COST,
+                 dp[i1 + 1][i2][OBJ] + GAP_COST]
+            if not global_alignment:
                 l += [0]
-            dp[i1 + 1][i2 + 1] = idx_max( *l )
+            dp[i1 + 1][i2 + 1] = idx_max(*l)
 
     # local_alignment_traceback
     # logger.info(list(zip(*np.where(dp[:,:,OBJ]==dp[:,:,OBJ].max()))))
@@ -409,7 +426,8 @@ def local_alignment(s1, s2, print_result=False, global_alignment=False):
     if global_alignment:
         traceback_starts = [(len(s1), len(s2))]
     else:
-        traceback_starts = list(zip(*np.where(dp[:, :, OBJ] == dp[:, :, OBJ].max())))
+        traceback_starts = list(
+            zip(*np.where(dp[:, :, OBJ] == dp[:, :, OBJ].max())))
     for i1, i2 in traceback_starts:
         traceback_pointer = dp[i1, i2, 0]
         ret = ["", ""]
@@ -447,7 +465,6 @@ def local_alignment(s1, s2, print_result=False, global_alignment=False):
 
 
 # from https://rosettacode.org/wiki/Levenshtein_distance#Memoized_recursive_version_2
-from functools import lru_cache
 @lru_cache(maxsize=2**26)
 def edit_distance(s, t):
     if not s:
@@ -634,7 +651,7 @@ class Result():
                  evaluated_X=None,
                  evaluated_y=None,
                  load_if_exists=False,
-                 min_count = 1
+                 min_count=1
                  ):
 
         if experiment is None:
@@ -757,7 +774,7 @@ class Result():
         return torch.cat(mus)
 
     @provide_ax
-    def plot_gmm(self, ax, fig=None, save=True,no_colors=False,no_gmm_centers = False):
+    def plot_gmm(self, ax, fig=None, save=True, no_colors=False, no_gmm_centers=False):
         if not hasattr(self, "gmm"):
             logger.info("calculating gmm")
             self.calc_gmm()
@@ -773,7 +790,7 @@ class Result():
                 ax.scatter(*self.mus.T, c=self.gmm_classes, s=2)
         if not no_gmm_centers:
             ax.scatter(*self.gmm_centers.T, c="r", marker="*",
-                    s=10, zorder=50, label="gmm center")
+                       s=10, zorder=50, label="gmm center")
             for i, (x, y) in enumerate(self.gmm_centers):
                 ax.text(x, y, f" {i}", ha="left", va="center", c="r", bbox=dict(
                     facecolor='white', alpha=0.5), zorder=40)
@@ -817,7 +834,7 @@ class Result():
         return ax
 
     @provide_ax
-    def plot_bo(self, ax, fig=None, n_grid=101, save=True, with_index=True, plot_range=(-2,2)):
+    def plot_bo(self, ax, fig=None, n_grid=101, save=True, with_index=True, plot_range=(-2, 2)):
         from mpl_toolkits.axes_grid1 import make_axes_locatable
         if not hasattr(self, "next_locations"):
             self.get_bo_result()
@@ -847,7 +864,7 @@ class Result():
                    color="k", zorder=50, label="bo proposed")
         if with_index:
             for i, (x, y) in enumerate(self.next_locations):
-                ax.text(x, y, f" {i}", color="k",zorder=51,va = "center")
+                ax.text(x, y, f" {i}", color="k", zorder=51, va="center")
         fig.colorbar(cont, cax=cax)
 
         return ax
@@ -867,8 +884,8 @@ class Result():
                 "(N, d) array: `evaluated_X` and (N, 1) array: `evaluated_y` should be set"
             self.domain = domain
             self.constraints = [{"name": f"var_{i+1}",
-                                "type": "continuous",
-                                "domain": self.domain}
+                                 "type": "continuous",
+                                 "domain": self.domain}
                                 for i in range(self.evaluated_X.shape[1])]
 
             self.bo = GPyOpt.methods.BayesianOptimization(
@@ -886,14 +903,13 @@ class Result():
         self.next_locations = self.bo.suggest_next_locations()
         return self.next_locations
 
-    
-
     def _points_to_score(self, points, eval_max=256):
         a, e_m = self.model.decoder(points)
         a = a.detach().numpy()
         e_m = e_m.detach().numpy()
 
-        logger.info (f"calculating most probable sequences up to {eval_max} candidates")
+        logger.info(
+            f"calculating most probable sequences up to {eval_max} candidates")
         pbar = tqdm(range(len(points)))
         scores = []
         for j in pbar:
@@ -957,10 +973,10 @@ class Result():
 
         return [most_probable for seq_pattern, most_probable, min_value in scores]
 
-    def plot_training_result(self, nwarmup=100, save=True, fig=None, axes = None):
-        from src.visualization import get_ax
+    def plot_training_result(self, nwarmup=100, save=True, fig=None, axes=None):
+        from raptgen.visualization import get_ax
         if axes is not None and fig is not None:
-            ax,ay = axes
+            ax, ay = axes
         fig, (ax, ay) = get_ax(row_col=(2, 1), return_fig=True)
 
         # for mean plot
@@ -1063,7 +1079,7 @@ class Experiments():
 
     def save_frequencies(self, save_path, sequences, min_count=2, idx_header=""):
         from functools import partial
-        
+
         if type(sequences) is str:
             sequences = [sequences]
         pbar = tqdm(total=len(sequences))
