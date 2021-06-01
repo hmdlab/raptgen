@@ -4,6 +4,7 @@ import logging
 import click
 import numpy as np
 from pathlib import Path
+import optuna
 
 import torch
 from torch import optim
@@ -16,6 +17,7 @@ from src.data import SequenceGenerator, SingleRound
 import os
 dir_path = os.path.dirname(os.path.realpath(__file__))
 default_path = str(Path(f"{dir_path}/../out/real").resolve())
+counter = 0
 
 
 @click.command(help='run experiment with real data', context_settings=dict(show_default=True))
@@ -31,7 +33,9 @@ default_path = str(Path(f"{dir_path}/../out/real").resolve())
 @click.option("--multi", help="the number of training for multiple times", type=int, default=1)
 @click.option("--reg-epochs", help="the number of epochs to conduct state transition regularization", type=int, default=50)
 @click.option("--batch-size", help="the number of batch size", type=int, default=512)
-def main(seqpath, epochs, threshold, cuda_id, use_cuda, save_dir, fwd, rev, min_count, multi, reg_epochs, batch_size):
+@click.option("--storage", help="the file to save optimize results", type=click.Path(), default=None)
+def main(seqpath, epochs, threshold, cuda_id, use_cuda,
+         save_dir, fwd, rev, min_count, multi, reg_epochs, batch_size, storage):
     logger = logging.getLogger(__name__)
 
     logger.info(f"saving to {save_dir}")
@@ -65,22 +69,52 @@ def main(seqpath, epochs, threshold, cuda_id, use_cuda, save_dir, fwd, rev, min_
 
     # evaluate model
     target_len = experiment.random_region_length
-    for i in range(multi):
-        model = CNN_PHMM_VAE_FAST(motif_len=target_len, embed_size=2)
+    global counter
+
+    def objective(trial: optuna.Trial) -> float:
+        global counter
+
+        model = CNN_PHMM_VAE_FAST(
+            motif_len=target_len,
+            embed_size=trial.suggest_int("embed_size", 2, 10),
+            hidden_size=trial.suggest_categorical("hidden_size", [16, 32, 64, 128, 256]))
         model_str = str(type(model)).split("\'")[-2].split(".")[-1].lower()
         if multi > 1:
-            model_str += f"_{i}"
+            model_str += f"_{counter:03d}"
+            counter += 1
         model_str += ".mdl"
         logger.info(f"training {model_str}")
-        optimizer = optim.SGD(model.parameters(), lr=1e-2, momentum=0.95)
+
+        lr = trial.suggest_loguniform("lr", 1e-4, 1e-1)
+        decay = trial.suggest_loguniform("weight_decay", 1e-3, 1e-1)
+
+        optimizer = optim.AdamW(
+            model.parameters(), lr=lr, weight_decay=decay)
         model = model.to(device)
 
         train_kwargs.update({
             "model": model,
             "model_str": model_str,
             "optimizer": optimizer})
-        models.train(**train_kwargs)
+        losses = models.train(**train_kwargs)
         torch.cuda.empty_cache()
+
+        test_losses = [loss[1] for loss in losses]
+        return min(test_losses)
+
+    if storage is None:
+        storage = save_dir/"optimization.db"
+    study = optuna.create_study(
+        study_name="chip",
+        storage="sqlite:///" + str(storage.absolute()),
+        direction='minimize',
+        load_if_exists=True)
+    study.optimize(objective, n_trials=multi)
+
+    trial = study.best_trial
+
+    print('test_loss: {}'.format(trial.value))
+    print("Best hyperparameters: {}".format(trial.params))
 
 
 if __name__ == "__main__":

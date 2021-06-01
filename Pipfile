@@ -14,10 +14,11 @@ numpy = "==1.18.1"
 torch = "==1.5.0"
 torchvision = "==0.6.0"
 svgwrite = "==1.4"
-scipy = "==1.4.0"
+scipy = "==1.3.0"
 GPy = "==1.9.9"
 GPyOpt = "==1.2.6"
 CairoSVG = "==2.5.1"
+optuna = "==2.7.0"
 
 [dev-packages]
 

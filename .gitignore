@@ -7,3 +7,6 @@ out/**
 **/.log
 pip-wheel-metadata/**
 Pipfile.lock
+results/
+!results/real
+!results/simulation
