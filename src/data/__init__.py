@@ -201,7 +201,7 @@ class SingleRound:
     """pass path or raw_reads to make class of selex experiment per round.
     """
 
-    def __init__(self, raw_reads: list = None, forward_adapter=None, reverse_adapter=None, name=None, tolerance=0, path: str = None):
+    def __init__(self, raw_reads: list = None, forward_adapter=None, reverse_adapter=None, name=None, tolerance=0, path: str = None, max_len=None):
         assert path is not None or raw_reads is not None, "either path or raw_reads has to be specified"
         if path:
             path = Path(path)
@@ -218,6 +218,7 @@ class SingleRound:
 
         self.raw_reads = raw_reads
         self.calc_target_length()
+        self.max_len = max_len
 
         if forward_adapter is None or reverse_adapter is None:
             logger.info("adapter info not provided. estimating value")
@@ -225,7 +226,8 @@ class SingleRound:
         else:
             logger.info(
                 f"sequence design : {forward_adapter}-[random]-{reverse_adapter}")
-            self.set_adapters(forward_adapter, reverse_adapter)
+            self.set_adapters(forward_adapter, reverse_adapter,
+                              self.max_len is not None)
 
         if name:
             self.name = name
@@ -238,7 +240,7 @@ class SingleRound:
     def get_adapters(self):
         return self.forward_adapter, self.reverse_adapter
 
-    def set_adapters(self, forward_adapter: str, reverse_adapter: str):
+    def set_adapters(self, forward_adapter: str, reverse_adapter: str, set_max_len=False):
         self.forward_adapter = forward_adapter
         self.forward_adapter_length = len(forward_adapter)
 
@@ -247,6 +249,8 @@ class SingleRound:
 
         self.random_region_length = self.target_length - \
             self.reverse_adapter_length - self.forward_adapter_length
+        if set_max_len:
+            self.random_region_length = self.max_len
 
     def calc_target_length(self):
         from collections import Counter, defaultdict
@@ -314,7 +318,7 @@ class SingleRound:
             f"filtering with : {fwd_adapter}({fwd_len}N)-{rand_len}N-{rev_adapter}({rev_len}N)")
 
         # write estimated experimental settings
-        self.set_adapters(fwd_adapter, rev_adapter)
+        self.set_adapters(fwd_adapter, rev_adapter, self.max_len is not None)
 
     def get_sequences_and_count(self):
         c = Counter(self.raw_reads)
@@ -344,8 +348,14 @@ class SingleRound:
 
     def cut_adapters(self, seq):
         if self.reverse_adapter_length == 0:
-            return seq[self.forward_adapter_length:]
-        return seq[self.forward_adapter_length:-self.reverse_adapter_length]
+            ret = seq[self.forward_adapter_length:]
+        else:
+            ret = seq[self.forward_adapter_length: -
+                      self.reverse_adapter_length]
+        if self.max_len is not None:
+            return ret[len(ret) // 2 - self.max_len // 2: len(ret) // 2 - self.max_len // 2 + self.max_len]
+        else:
+            return ret
 
     def __str__(self):
         return f"experiment of {len(self.raw_reads)} raw reads"

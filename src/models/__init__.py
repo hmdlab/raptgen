@@ -30,7 +30,7 @@ class CNNRNNVAE(nn.Module):
 
 
 def train(epochs, model, train_loader, test_loader, optimizer, loss_fn=None, device="cuda", n_print=100, model_str="model.mdl", save_dir=Path("./"), threshold=20, beta=1, beta_schedule=False, force_matching=False, force_epochs=20, logs=True, position=0):
-    csv_filename = model_str.replace(".mdl",".csv")
+    csv_filename = model_str.replace(".mdl", ".csv")
     if loss_fn == profile_hmm_loss_fn and force_matching:
         logger.info(f"force till {force_epochs}")
     patient = 0
@@ -61,6 +61,8 @@ def train(epochs, model, train_loader, test_loader, optimizer, loss_fn=None, dev
             train_loss /= len(train_loader.dataset)
             if np.isnan(train_loss):
                 logger.info("!-- train -> nan")
+                if len(losses) == 0:
+                    return [(float("inf"), float("inf"), float("inf"), float("inf"))]
                 return losses
             model.eval()
             test_ce = 0
@@ -76,6 +78,8 @@ def train(epochs, model, train_loader, test_loader, optimizer, loss_fn=None, dev
             test_loss = test_kld + test_ce
             if np.isnan(test_loss):
                 logger.info("!-- test -> nan")
+                if len(losses) == 0:
+                    return [(float("inf"), float("inf"), float("inf"), float("inf"))]
                 return losses
             loss = (train_loss, test_loss, test_ce, test_kld)
             losses.append(loss)
@@ -93,7 +97,8 @@ def train(epochs, model, train_loader, test_loader, optimizer, loss_fn=None, dev
                 "[" + "⠸⠴⠦⠇⠋⠙"[epoch % 6] + "]")
             len_model_str = len(model_str)
             if len_model_str > 10:
-                model_str_print = f"..........{model_str}.........."[(epoch+9)%(len_model_str+10):(epoch+9)%(len_model_str+10) + 10]
+                model_str_print = f"..........{model_str}.........."[
+                    (epoch+9) % (len_model_str+10):(epoch+9) % (len_model_str+10) + 10]
             else:
                 model_str_print = model_str
             description = f'{patience_str:>4}{epoch:4d} itr {train_loss:6.2f} <-> {test_loss:6.2f} ({test_ce:6.2f}+{test_kld:6.2f}) of {model_str_print}'
@@ -108,6 +113,7 @@ def train(epochs, model, train_loader, test_loader, optimizer, loss_fn=None, dev
                 pbar.set_description(description)
                 pbar.update(1)
     return losses
+
 
 def kld_loss(mu, logvar):
     KLD = - 0.5 * torch.sum(1 + logvar - mu.pow(2) -
@@ -124,6 +130,7 @@ class State(IntEnum):
     M = 0
     I = 1
     D = 2
+
 
 class Transition(IntEnum):
     M2M = 0
@@ -199,11 +206,92 @@ def profile_hmm_loss(recon_param, input, force_matching=False, match_cost=5):
         return - force_loss - torch.logsumexp(F[:, :, motif_len, random_len], dim=1).mean()
     return - torch.logsumexp(F[:, :, motif_len, random_len], dim=1).mean()
 
+
+def torch_multi_polytope_dp_log(transition_proba, emission_proba, output):
+    """
+    torch_multi_polytope_dp_log(
+        emission_proba,
+        transition_proba,
+        output
+    )
+
+    Given logarithmic parameters, the function calculates 
+    the probability of the output sequence of a certain 
+    Profile Hidden Markov Model (PHMM) by forward algorithm.
+
+    For the efficiency, this function is utilizing polytope 
+    model which enables parallel dynamic programming (DP).
+
+    Parameters
+    ----------
+    emission_proba : torch.Tensor
+        the tensor which emit characters. the tensor shape
+        has to be (`batch`, `from`=3, `to`=3, `model_length`+1) and
+        the tensor has to be logarithmic number
+
+    transition_proba : torch.Tensor
+        the tensor which define the probability to transit
+        state to state. the tensor shape has to be:
+        (`batch`, `model_length`, `augc`=4)
+
+    output : torch.Tensor
+        the tensor of the output vector. the tensor shape
+        has to be (`batch`, `string_length`)
+
+    Returns
+    ------
+    probabilities : torch.Tensor
+        log-probabilities of the given output tensor with
+        shape (`batch`,)
+
+    """
+    model_length = emission_proba.shape[1]
+    batch_size, string_length = output.shape
+
+    F = torch.ones(
+        size=(batch_size, 3, model_length +
+              string_length + 1, string_length + 1),
+        device=output.device) * - 200
+    F[:, State.M, 0, 0] = 0
+    log4 = torch.Tensor([4]).log().to(output.device)
+    arange = torch.arange(
+        start=0, end=model_length + string_length + 1, device=output.device)
+    for model_index_pre in range(1, model_length + string_length+1):
+        if max(1, model_index_pre-model_length) < min(string_length+1, model_index_pre):
+            m_slice = arange[max(1, model_index_pre-model_length)                             : min(string_length+1, model_index_pre)]
+            F[:, State.M, model_index_pre, m_slice] = \
+                torch.gather(
+                    emission_proba[:, model_index_pre - m_slice - 1], 2,
+                    output[:, m_slice - 1, None]).reshape(batch_size, len(m_slice)) \
+                + torch.logsumexp(
+                    transition_proba[:, :, State.M,
+                                     model_index_pre - m_slice - 1]
+                    + F[:, :, model_index_pre - 2, m_slice - 1], axis=1)
+
+        if max(1, model_index_pre-model_length) < min(string_length+1, model_index_pre+1):
+            i_slice = arange[max(1, model_index_pre-model_length)                             : min(string_length+1, model_index_pre+1)]
+            F[:, State.I, model_index_pre, i_slice] = \
+                torch.logsumexp(
+                    transition_proba[:, :, State.I, model_index_pre - i_slice]
+                    + F[:, :, model_index_pre - 1, i_slice - 1], axis=1) \
+                - log4
+
+        if max(0, model_index_pre-model_length) < min(string_length+1, model_index_pre):
+            d_slice = arange[max(1, model_index_pre-model_length)                             : min(string_length+1, model_index_pre)]
+            F[:, State.D, model_index_pre, d_slice] = \
+                torch.logsumexp(
+                    transition_proba[:, :, State.D,
+                                     model_index_pre - d_slice - 1]
+                    + F[:, :, model_index_pre - 1, d_slice], axis=1)
+
+    return -torch.logsumexp(F[:, :, -1, -1] + transition_proba[:, :, State.M, -1], axis=1).mean()
+
+
 def end_padded_multi_categorical_loss_fn(input, recon_param, mu, logvar, debug=False, test=False, beta=1):
     from src.data import nt_index
     loss = multi_categorical_loss_fn(
         F.pad(input, (0, 1), "constant", nt_index.EOS),
-            recon_param, mu, logvar, debug, test, beta)
+        recon_param, mu, logvar, debug, test, beta)
     # logger.info(loss.shape)
     return loss
 
@@ -222,6 +310,17 @@ def multi_categorical_loss_fn(input, recon_param, mu, logvar, debug=False, test=
 def profile_hmm_loss_fn(input, recon_param, mu, logvar, debug=False, test=False, beta=1, force_matching=False, match_cost=5):
     phmmloss = profile_hmm_loss(
         recon_param, input, force_matching=force_matching, match_cost=match_cost)
+    kld = kld_loss(mu, logvar)
+
+    if debug:
+        logger.info(f"phmm={phmmloss:.2f}, kld={kld:.2f}")
+    if test:
+        return phmmloss.item(), kld.item()
+    return phmmloss + beta * kld
+
+
+def profile_hmm_loss_fn_fast(input, recon_param, mu, logvar, debug=False, test=False, beta=1, force_matching=False, match_cost=5):
+    phmmloss = torch_multi_polytope_dp_log(*recon_param, input)
     kld = kld_loss(mu, logvar)
 
     if debug:
@@ -418,9 +517,10 @@ class EncoderCNNLSTM (nn.Module):
     def forward(self, seqences):
         from src.data import nt_index
         # PAD, SOS, SEQ, EOS, PAD
-        x = F.pad(seqences, (1, 0), "constant",int(nt_index.SOS))
+        x = F.pad(seqences, (1, 0), "constant", int(nt_index.SOS))
         x = F.pad(x, (0, 1), "constant", int(nt_index.EOS))
-        x = F.pad(x, (self.window_size-1, self.window_size-1), "constant", int(nt_index.PAD))
+        x = F.pad(x, (self.window_size-1, self.window_size-1),
+                  "constant", int(nt_index.PAD))
 
         # change X from (N, L) to (N, L, C)
         x = F.leaky_relu(self.embed(x))
@@ -433,6 +533,7 @@ class EncoderCNNLSTM (nn.Module):
         o, (h, c) = self.lstm(x)
 
         return torch.cat((h[0], h[1]), dim=1)
+
 
 class DecoderPHMM(nn.Module):
     # tile hidden and input to make x
@@ -509,6 +610,50 @@ class DecoderPHMM(nn.Module):
             transition_from_deletion), dim=2), emission_proba)
 
 
+class DecoderPHMM_fast(nn.Module):
+    # tile hidden and input to make x
+    def __init__(self,  motif_len, embed_size,  hidden_size=32):
+        super(DecoderPHMM_fast, self).__init__()
+
+        class View(nn.Module):
+            def __init__(self, shape):
+                super(View, self).__init__()
+                self.shape = shape
+
+            def forward(self, x):
+                return x.view(*self.shape)
+
+        self.fc = nn.Sequential(
+            nn.Linear(embed_size, hidden_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True))
+
+        self.transition = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Linear(hidden_size, 3*3*(motif_len+1)),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            View((-1, 3, 3, motif_len+1)),
+            nn.LogSoftmax(dim=2)
+        )
+
+        self.emission = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Linear(hidden_size, motif_len*4),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            View((-1, motif_len, 4)),
+            nn.LogSoftmax(dim=2)
+        )
+
+    def forward(self, input):
+        x = self.fc(input)
+
+        transition_proba = self.transition(x)
+        emission_proba = self.emission(x)
+
+        return (transition_proba, emission_proba)
+
+
 class DecoderCNN(nn.Module):
     # tile hidden and input to make x
     def __init__(self, embed_size, target_len, hidden_size=32, kernel_size=7, in_channels=4):
@@ -561,15 +706,15 @@ class DecoderCNN(nn.Module):
             nn.BatchNorm1d(hidden_size),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.ConvTranspose1d(**transpose_kwargs),
-            
+
             nn.BatchNorm1d(**batchnorm_kwargs),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.ConvTranspose1d(**transpose_kwargs),
-            
+
             nn.BatchNorm1d(**batchnorm_kwargs),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.ConvTranspose1d(**conv1x1_kwargs),
-            
+
             nn.LeakyReLU(negative_slope=0.01, inplace=True))
 
     def forward(self, in_x):
@@ -700,10 +845,21 @@ class CNN_PHMM_VAE(VAE):
     def __init__(self, motif_len=12, embed_size=10, hidden_size=32, kernel_size=7):
         encoder = EncoderCNN(hidden_size, kernel_size)
         decoder = DecoderPHMM(motif_len, embed_size)
-        
+
         super(CNN_PHMM_VAE, self).__init__(
             encoder, decoder, embed_size, hidden_size)
         self.loss_fn = profile_hmm_loss_fn
+
+
+class CNN_PHMM_VAE_FAST(VAE):
+    def __init__(self, motif_len=12, embed_size=10, hidden_size=32, kernel_size=7):
+        encoder = EncoderCNN(hidden_size, kernel_size)
+        decoder = DecoderPHMM_fast(
+            motif_len, embed_size, hidden_size=hidden_size)
+
+        super(CNN_PHMM_VAE_FAST, self).__init__(
+            encoder, decoder, embed_size, hidden_size)
+        self.loss_fn = profile_hmm_loss_fn_fast
 
 
 class LSTM_PHMM_VAE(VAE):
