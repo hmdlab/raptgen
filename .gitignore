@@ -10,3 +10,4 @@ Pipfile.lock
 results/
 !results/real
 !results/simulation
+*.sh
